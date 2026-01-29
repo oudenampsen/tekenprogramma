@@ -12,9 +12,39 @@
     .canvas-container {
       touch-action: none;
       cursor: crosshair;
+      position: relative;
     }
     .canvas-container canvas {
       display: block;
+    }
+    .shape-item {
+      cursor: grab;
+      user-select: none;
+      transition: transform 0.1s, box-shadow 0.1s;
+    }
+    .shape-item:hover {
+      transform: scale(1.05);
+      box-shadow: 0 4px 12px rgba(0,0,0,0.3);
+    }
+    .shape-item:active {
+      cursor: grabbing;
+    }
+    .shape-preview {
+      width: 60px;
+      height: 60px;
+      display: flex;
+      align-items: center;
+      justify-content: center;
+    }
+    .shape-preview svg {
+      width: 50px;
+      height: 50px;
+    }
+    .drag-ghost {
+      position: fixed;
+      pointer-events: none;
+      opacity: 0.8;
+      z-index: 9999;
     }
   </style>
 </head>
@@ -54,6 +84,25 @@
           </v-card>
         </v-menu>
         
+        <!-- Shape size for drag & drop -->
+        <v-menu :close-on-content-click="false">
+          <template v-slot:activator="{ props }">
+            <v-btn v-bind="props" icon>
+              <v-icon>mdi-resize</v-icon>
+            </v-btn>
+          </template>
+          <v-card class="pa-4" width="200">
+            <v-slider
+              v-model="shapeSize"
+              :min="20"
+              :max="200"
+              :step="10"
+              label="Vorm grootte"
+              thumb-label
+            ></v-slider>
+          </v-card>
+        </v-menu>
+        
         <!-- Tools -->
         <v-btn-toggle v-model="tool" mandatory density="compact" class="mx-2">
           <v-btn value="pen" icon>
@@ -82,6 +131,25 @@
         </v-btn>
       </v-app-bar>
       
+      <v-navigation-drawer permanent width="120">
+        <v-list density="compact">
+          <v-list-subheader>Vormen</v-list-subheader>
+          <v-list-item
+            v-for="shape in shapes"
+            :key="shape.id"
+            class="shape-item my-1"
+            draggable="true"
+            @dragstart="onDragStart($event, shape)"
+            @dragend="onDragEnd"
+          >
+            <div class="d-flex flex-column align-center">
+              <div class="shape-preview" v-html="shape.svg"></div>
+              <span class="text-caption">{{ shape.name }}</span>
+            </div>
+          </v-list-item>
+        </v-list>
+      </v-navigation-drawer>
+      
       <v-main>
         <div 
           ref="canvasContainer" 
@@ -93,10 +161,19 @@
           @touchstart.prevent="startDrawing"
           @touchmove.prevent="draw"
           @touchend.prevent="stopDrawing"
+          @dragover.prevent="onDragOver"
+          @drop.prevent="onDrop"
         >
           <canvas ref="canvas"></canvas>
         </div>
       </v-main>
+      
+      <!-- Drag ghost -->
+      <div v-if="draggingShape" class="drag-ghost" :style="ghostStyle">
+        <svg :width="shapeSize" :height="shapeSize" viewBox="0 0 100 100">
+          <g v-html="draggingShape.path" :stroke="currentColor" fill="none" stroke-width="3"></g>
+        </svg>
+      </div>
       
       <!-- Snackbar for notifications -->
       <v-snackbar v-model="snackbar" :timeout="2000">
@@ -108,7 +185,7 @@
   <script src="https://cdn.jsdelivr.net/npm/vue@3.3.8/dist/vue.global.prod.js"></script>
   <script src="https://cdn.jsdelivr.net/npm/vuetify@3.4.0/dist/vuetify.min.js"></script>
   <script>
-    const { createApp, ref, onMounted, onUnmounted, watch } = Vue;
+    const { createApp, ref, computed, onMounted, onUnmounted, watch } = Vue;
     const { createVuetify } = Vuetify;
 
     const vuetify = createVuetify({
@@ -125,11 +202,82 @@
         const isDrawing = ref(false);
         const currentColor = ref('#FFFFFF');
         const brushSize = ref(5);
+        const shapeSize = ref(80);
         const tool = ref('pen');
         const history = ref([]);
         const historyIndex = ref(-1);
         const snackbar = ref(false);
         const snackbarText = ref('');
+        const draggingShape = ref(null);
+        const ghostPosition = ref({ x: 0, y: 0 });
+        
+        const shapes = ref([
+          {
+            id: 'line',
+            name: 'Lijn',
+            svg: '<svg viewBox="0 0 100 100"><line x1="10" y1="90" x2="90" y2="10" stroke="white" stroke-width="4"/></svg>',
+            path: '<line x1="10" y1="90" x2="90" y2="10"/>'
+          },
+          {
+            id: 'circle',
+            name: 'Cirkel',
+            svg: '<svg viewBox="0 0 100 100"><circle cx="50" cy="50" r="40" stroke="white" stroke-width="4" fill="none"/></svg>',
+            path: '<circle cx="50" cy="50" r="40"/>'
+          },
+          {
+            id: 'square',
+            name: 'Vierkant',
+            svg: '<svg viewBox="0 0 100 100"><rect x="10" y="10" width="80" height="80" stroke="white" stroke-width="4" fill="none"/></svg>',
+            path: '<rect x="10" y="10" width="80" height="80"/>'
+          },
+          {
+            id: 'triangle',
+            name: 'Driehoek',
+            svg: '<svg viewBox="0 0 100 100"><polygon points="50,10 90,90 10,90" stroke="white" stroke-width="4" fill="none"/></svg>',
+            path: '<polygon points="50,10 90,90 10,90"/>'
+          },
+          {
+            id: 'star',
+            name: 'Ster',
+            svg: '<svg viewBox="0 0 100 100"><polygon points="50,5 61,40 98,40 68,62 79,97 50,75 21,97 32,62 2,40 39,40" stroke="white" stroke-width="3" fill="none"/></svg>',
+            path: '<polygon points="50,5 61,40 98,40 68,62 79,97 50,75 21,97 32,62 2,40 39,40"/>'
+          },
+          {
+            id: 'arrow',
+            name: 'Pijl',
+            svg: '<svg viewBox="0 0 100 100"><path d="M10,50 L70,50 M70,50 L50,30 M70,50 L50,70" stroke="white" stroke-width="4" fill="none"/></svg>',
+            path: '<path d="M10,50 L70,50 M70,50 L50,30 M70,50 L50,70"/>'
+          },
+          {
+            id: 'heart',
+            name: 'Hart',
+            svg: '<svg viewBox="0 0 100 100"><path d="M50,88 C20,60 5,40 15,25 C25,10 40,15 50,30 C60,15 75,10 85,25 C95,40 80,60 50,88 Z" stroke="white" stroke-width="3" fill="none"/></svg>',
+            path: '<path d="M50,88 C20,60 5,40 15,25 C25,10 40,15 50,30 C60,15 75,10 85,25 C95,40 80,60 50,88 Z"/>'
+          },
+          {
+            id: 'diamond',
+            name: 'Ruit',
+            svg: '<svg viewBox="0 0 100 100"><polygon points="50,5 95,50 50,95 5,50" stroke="white" stroke-width="4" fill="none"/></svg>',
+            path: '<polygon points="50,5 95,50 50,95 5,50"/>'
+          },
+          {
+            id: 'hexagon',
+            name: 'Zeshoek',
+            svg: '<svg viewBox="0 0 100 100"><polygon points="50,5 90,27 90,73 50,95 10,73 10,27" stroke="white" stroke-width="4" fill="none"/></svg>',
+            path: '<polygon points="50,5 90,27 90,73 50,95 10,73 10,27"/>'
+          },
+          {
+            id: 'cross',
+            name: 'Kruis',
+            svg: '<svg viewBox="0 0 100 100"><path d="M50,10 L50,90 M10,50 L90,50" stroke="white" stroke-width="4"/></svg>',
+            path: '<path d="M50,10 L50,90 M10,50 L90,50"/>'
+          }
+        ]);
+        
+        const ghostStyle = computed(() => ({
+          left: (ghostPosition.value.x - shapeSize.value / 2) + 'px',
+          top: (ghostPosition.value.y - shapeSize.value / 2) + 'px'
+        }));
 
         const getCoords = (e) => {
           const rect = canvas.value.getBoundingClientRect();
@@ -156,6 +304,7 @@
         };
 
         const startDrawing = (e) => {
+          if (draggingShape.value) return;
           isDrawing.value = true;
           const coords = getCoords(e);
           ctx.value.beginPath();
@@ -299,6 +448,125 @@
           ctx.value.fillRect(0, 0, canvas.value.width, canvas.value.height);
           ctx.value.drawImage(tempCanvas, 0, 0);
         };
+        
+        // Drag & Drop handlers
+        const onDragStart = (e, shape) => {
+          draggingShape.value = shape;
+          e.dataTransfer.effectAllowed = 'copy';
+          e.dataTransfer.setDragImage(new Image(), 0, 0); // Hide default ghost
+          
+          document.addEventListener('dragover', updateGhostPosition);
+        };
+        
+        const updateGhostPosition = (e) => {
+          ghostPosition.value = { x: e.clientX, y: e.clientY };
+        };
+        
+        const onDragEnd = () => {
+          draggingShape.value = null;
+          document.removeEventListener('dragover', updateGhostPosition);
+        };
+        
+        const onDragOver = (e) => {
+          e.dataTransfer.dropEffect = 'copy';
+        };
+        
+        const onDrop = (e) => {
+          if (!draggingShape.value) return;
+          
+          const rect = canvas.value.getBoundingClientRect();
+          const x = e.clientX - rect.left;
+          const y = e.clientY - rect.top;
+          
+          drawShape(draggingShape.value, x, y);
+          saveState();
+          showSnackbar(`${draggingShape.value.name} geplaatst`);
+          
+          draggingShape.value = null;
+        };
+        
+        const drawShape = (shape, centerX, centerY) => {
+          const size = shapeSize.value;
+          const halfSize = size / 2;
+          const color = currentColor.value;
+          
+          ctx.value.save();
+          ctx.value.strokeStyle = color;
+          ctx.value.lineWidth = brushSize.value;
+          ctx.value.lineCap = 'round';
+          ctx.value.lineJoin = 'round';
+          
+          ctx.value.translate(centerX - halfSize, centerY - halfSize);
+          ctx.value.scale(size / 100, size / 100);
+          
+          ctx.value.beginPath();
+          
+          switch (shape.id) {
+            case 'line':
+              ctx.value.moveTo(10, 90);
+              ctx.value.lineTo(90, 10);
+              break;
+            case 'circle':
+              ctx.value.arc(50, 50, 40, 0, Math.PI * 2);
+              break;
+            case 'square':
+              ctx.value.rect(10, 10, 80, 80);
+              break;
+            case 'triangle':
+              ctx.value.moveTo(50, 10);
+              ctx.value.lineTo(90, 90);
+              ctx.value.lineTo(10, 90);
+              ctx.value.closePath();
+              break;
+            case 'star':
+              const starPoints = [50,5, 61,40, 98,40, 68,62, 79,97, 50,75, 21,97, 32,62, 2,40, 39,40];
+              ctx.value.moveTo(starPoints[0], starPoints[1]);
+              for (let i = 2; i < starPoints.length; i += 2) {
+                ctx.value.lineTo(starPoints[i], starPoints[i + 1]);
+              }
+              ctx.value.closePath();
+              break;
+            case 'arrow':
+              ctx.value.moveTo(10, 50);
+              ctx.value.lineTo(70, 50);
+              ctx.value.moveTo(70, 50);
+              ctx.value.lineTo(50, 30);
+              ctx.value.moveTo(70, 50);
+              ctx.value.lineTo(50, 70);
+              break;
+            case 'heart':
+              ctx.value.moveTo(50, 88);
+              ctx.value.bezierCurveTo(20, 60, 5, 40, 15, 25);
+              ctx.value.bezierCurveTo(25, 10, 40, 15, 50, 30);
+              ctx.value.bezierCurveTo(60, 15, 75, 10, 85, 25);
+              ctx.value.bezierCurveTo(95, 40, 80, 60, 50, 88);
+              break;
+            case 'diamond':
+              ctx.value.moveTo(50, 5);
+              ctx.value.lineTo(95, 50);
+              ctx.value.lineTo(50, 95);
+              ctx.value.lineTo(5, 50);
+              ctx.value.closePath();
+              break;
+            case 'hexagon':
+              const hexPoints = [50,5, 90,27, 90,73, 50,95, 10,73, 10,27];
+              ctx.value.moveTo(hexPoints[0], hexPoints[1]);
+              for (let i = 2; i < hexPoints.length; i += 2) {
+                ctx.value.lineTo(hexPoints[i], hexPoints[i + 1]);
+              }
+              ctx.value.closePath();
+              break;
+            case 'cross':
+              ctx.value.moveTo(50, 10);
+              ctx.value.lineTo(50, 90);
+              ctx.value.moveTo(10, 50);
+              ctx.value.lineTo(90, 50);
+              break;
+          }
+          
+          ctx.value.stroke();
+          ctx.value.restore();
+        };
 
         onMounted(() => {
           ctx.value = canvas.value.getContext('2d');
@@ -320,18 +588,26 @@
           canvasContainer,
           currentColor,
           brushSize,
+          shapeSize,
           tool,
           history,
           historyIndex,
           snackbar,
           snackbarText,
+          shapes,
+          draggingShape,
+          ghostStyle,
           startDrawing,
           draw,
           stopDrawing,
           undo,
           redo,
           clearCanvas,
-          saveDrawing
+          saveDrawing,
+          onDragStart,
+          onDragEnd,
+          onDragOver,
+          onDrop
         };
       }
     });

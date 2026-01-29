@@ -21,6 +21,7 @@
       cursor: grab;
       user-select: none;
       transition: transform 0.1s, box-shadow 0.1s;
+      position: relative;
     }
     .shape-item:hover {
       transform: scale(1.05);
@@ -35,16 +36,31 @@
       display: flex;
       align-items: center;
       justify-content: center;
+      background: #2a2a2a;
+      border-radius: 8px;
     }
-    .shape-preview svg {
+    .shape-preview svg, .shape-preview img, .shape-preview canvas {
       width: 50px;
       height: 50px;
+      object-fit: contain;
     }
     .drag-ghost {
       position: fixed;
       pointer-events: none;
       opacity: 0.8;
       z-index: 9999;
+    }
+    .custom-shape-canvas {
+      border: 2px solid #666;
+      border-radius: 8px;
+      cursor: crosshair;
+      background: #1e1e1e;
+    }
+    .delete-btn {
+      position: absolute;
+      top: -8px;
+      right: -8px;
+      z-index: 10;
     }
   </style>
 </head>
@@ -131,11 +147,13 @@
         </v-btn>
       </v-app-bar>
       
-      <v-navigation-drawer permanent width="120">
+      <v-navigation-drawer permanent width="130">
         <v-list density="compact">
           <v-list-subheader>Vormen</v-list-subheader>
+          
+          <!-- Built-in shapes -->
           <v-list-item
-            v-for="shape in shapes"
+            v-for="shape in builtInShapes"
             :key="shape.id"
             class="shape-item my-1"
             draggable="true"
@@ -145,6 +163,47 @@
             <div class="d-flex flex-column align-center">
               <div class="shape-preview" v-html="shape.svg"></div>
               <span class="text-caption">{{ shape.name }}</span>
+            </div>
+          </v-list-item>
+          
+          <v-divider class="my-2" v-if="customShapes.length > 0"></v-divider>
+          <v-list-subheader v-if="customShapes.length > 0">Eigen vormen</v-list-subheader>
+          
+          <!-- Custom shapes -->
+          <v-list-item
+            v-for="shape in customShapes"
+            :key="shape.id"
+            class="shape-item my-1"
+            draggable="true"
+            @dragstart="onDragStart($event, shape)"
+            @dragend="onDragEnd"
+          >
+            <div class="d-flex flex-column align-center position-relative">
+              <v-btn
+                icon
+                size="x-small"
+                color="error"
+                class="delete-btn"
+                @click.stop="deleteCustomShape(shape.id)"
+              >
+                <v-icon size="small">mdi-close</v-icon>
+              </v-btn>
+              <div class="shape-preview">
+                <img :src="shape.dataUrl" />
+              </div>
+              <span class="text-caption">{{ shape.name }}</span>
+            </div>
+          </v-list-item>
+          
+          <v-divider class="my-2"></v-divider>
+          
+          <!-- Add custom shape button -->
+          <v-list-item @click="openCustomShapeDialog" class="shape-item my-1">
+            <div class="d-flex flex-column align-center">
+              <div class="shape-preview">
+                <v-icon size="32" color="primary">mdi-plus</v-icon>
+              </div>
+              <span class="text-caption">Toevoegen</span>
             </div>
           </v-list-item>
         </v-list>
@@ -170,10 +229,62 @@
       
       <!-- Drag ghost -->
       <div v-if="draggingShape" class="drag-ghost" :style="ghostStyle">
-        <svg :width="shapeSize" :height="shapeSize" viewBox="0 0 100 100">
-          <g v-html="draggingShape.path" :stroke="currentColor" fill="none" stroke-width="3"></g>
-        </svg>
+        <template v-if="draggingShape.isCustom">
+          <img :src="draggingShape.dataUrl" :width="shapeSize" :height="shapeSize" style="object-fit: contain;" />
+        </template>
+        <template v-else>
+          <svg :width="shapeSize" :height="shapeSize" viewBox="0 0 100 100">
+            <g v-html="draggingShape.path" :stroke="currentColor" fill="none" stroke-width="3"></g>
+          </svg>
+        </template>
       </div>
+      
+      <!-- Custom shape dialog -->
+      <v-dialog v-model="customShapeDialog" max-width="400" persistent>
+        <v-card>
+          <v-card-title>Nieuwe vorm tekenen</v-card-title>
+          <v-card-text>
+            <v-text-field
+              v-model="newShapeName"
+              label="Naam van de vorm"
+              placeholder="bijv. Boom, Huis, Zon..."
+              variant="outlined"
+              density="compact"
+              class="mb-4"
+            ></v-text-field>
+            
+            <div class="text-center mb-2">
+              <canvas 
+                ref="customShapeCanvas"
+                width="200" 
+                height="200"
+                class="custom-shape-canvas"
+                @mousedown="startCustomDraw"
+                @mousemove="customDraw"
+                @mouseup="stopCustomDraw"
+                @mouseleave="stopCustomDraw"
+                @touchstart.prevent="startCustomDraw"
+                @touchmove.prevent="customDraw"
+                @touchend.prevent="stopCustomDraw"
+              ></canvas>
+            </div>
+            
+            <div class="d-flex justify-center gap-2">
+              <v-btn size="small" variant="outlined" @click="clearCustomCanvas">
+                <v-icon start>mdi-eraser</v-icon>
+                Wissen
+              </v-btn>
+            </div>
+          </v-card-text>
+          <v-card-actions>
+            <v-spacer></v-spacer>
+            <v-btn @click="closeCustomShapeDialog">Annuleren</v-btn>
+            <v-btn color="primary" @click="saveCustomShape" :disabled="!newShapeName.trim()">
+              Opslaan
+            </v-btn>
+          </v-card-actions>
+        </v-card>
+      </v-dialog>
       
       <!-- Snackbar for notifications -->
       <v-snackbar v-model="snackbar" :timeout="2000">
@@ -185,7 +296,7 @@
   <script src="https://cdn.jsdelivr.net/npm/vue@3.3.8/dist/vue.global.prod.js"></script>
   <script src="https://cdn.jsdelivr.net/npm/vuetify@3.4.0/dist/vuetify.min.js"></script>
   <script>
-    const { createApp, ref, computed, onMounted, onUnmounted, watch } = Vue;
+    const { createApp, ref, computed, onMounted, onUnmounted, watch, nextTick } = Vue;
     const { createVuetify } = Vuetify;
 
     const vuetify = createVuetify({
@@ -211,7 +322,15 @@
         const draggingShape = ref(null);
         const ghostPosition = ref({ x: 0, y: 0 });
         
-        const shapes = ref([
+        // Custom shape dialog
+        const customShapeDialog = ref(false);
+        const customShapeCanvas = ref(null);
+        const customShapeCtx = ref(null);
+        const isCustomDrawing = ref(false);
+        const newShapeName = ref('');
+        const customShapes = ref([]);
+        
+        const builtInShapes = ref([
           {
             id: 'line',
             name: 'Lijn',
@@ -259,18 +378,6 @@
             name: 'Ruit',
             svg: '<svg viewBox="0 0 100 100"><polygon points="50,5 95,50 50,95 5,50" stroke="white" stroke-width="4" fill="none"/></svg>',
             path: '<polygon points="50,5 95,50 50,95 5,50"/>'
-          },
-          {
-            id: 'hexagon',
-            name: 'Zeshoek',
-            svg: '<svg viewBox="0 0 100 100"><polygon points="50,5 90,27 90,73 50,95 10,73 10,27" stroke="white" stroke-width="4" fill="none"/></svg>',
-            path: '<polygon points="50,5 90,27 90,73 50,95 10,73 10,27"/>'
-          },
-          {
-            id: 'cross',
-            name: 'Kruis',
-            svg: '<svg viewBox="0 0 100 100"><path d="M50,10 L50,90 M10,50 L90,50" stroke="white" stroke-width="4"/></svg>',
-            path: '<path d="M50,10 L50,90 M10,50 L90,50"/>'
           }
         ]);
         
@@ -278,9 +385,44 @@
           left: (ghostPosition.value.x - shapeSize.value / 2) + 'px',
           top: (ghostPosition.value.y - shapeSize.value / 2) + 'px'
         }));
+        
+        // Load custom shapes from localStorage
+        const loadCustomShapes = () => {
+          try {
+            const saved = localStorage.getItem('customShapes');
+            if (saved) {
+              customShapes.value = JSON.parse(saved);
+            }
+          } catch (e) {
+            console.error('Error loading custom shapes:', e);
+          }
+        };
+        
+        // Save custom shapes to localStorage
+        const saveCustomShapesToStorage = () => {
+          try {
+            localStorage.setItem('customShapes', JSON.stringify(customShapes.value));
+          } catch (e) {
+            console.error('Error saving custom shapes:', e);
+          }
+        };
 
         const getCoords = (e) => {
           const rect = canvas.value.getBoundingClientRect();
+          if (e.touches) {
+            return {
+              x: e.touches[0].clientX - rect.left,
+              y: e.touches[0].clientY - rect.top
+            };
+          }
+          return {
+            x: e.clientX - rect.left,
+            y: e.clientY - rect.top
+          };
+        };
+        
+        const getCustomCoords = (e) => {
+          const rect = customShapeCanvas.value.getBoundingClientRect();
           if (e.touches) {
             return {
               x: e.touches[0].clientX - rect.left,
@@ -453,7 +595,7 @@
         const onDragStart = (e, shape) => {
           draggingShape.value = shape;
           e.dataTransfer.effectAllowed = 'copy';
-          e.dataTransfer.setDragImage(new Image(), 0, 0); // Hide default ghost
+          e.dataTransfer.setDragImage(new Image(), 0, 0);
           
           document.addEventListener('dragover', updateGhostPosition);
         };
@@ -478,7 +620,11 @@
           const x = e.clientX - rect.left;
           const y = e.clientY - rect.top;
           
-          drawShape(draggingShape.value, x, y);
+          if (draggingShape.value.isCustom) {
+            drawCustomShape(draggingShape.value, x, y);
+          } else {
+            drawShape(draggingShape.value, x, y);
+          }
           saveState();
           showSnackbar(`${draggingShape.value.name} geplaatst`);
           
@@ -548,24 +694,92 @@
               ctx.value.lineTo(5, 50);
               ctx.value.closePath();
               break;
-            case 'hexagon':
-              const hexPoints = [50,5, 90,27, 90,73, 50,95, 10,73, 10,27];
-              ctx.value.moveTo(hexPoints[0], hexPoints[1]);
-              for (let i = 2; i < hexPoints.length; i += 2) {
-                ctx.value.lineTo(hexPoints[i], hexPoints[i + 1]);
-              }
-              ctx.value.closePath();
-              break;
-            case 'cross':
-              ctx.value.moveTo(50, 10);
-              ctx.value.lineTo(50, 90);
-              ctx.value.moveTo(10, 50);
-              ctx.value.lineTo(90, 50);
-              break;
           }
           
           ctx.value.stroke();
           ctx.value.restore();
+        };
+        
+        const drawCustomShape = (shape, centerX, centerY) => {
+          const img = new Image();
+          img.onload = () => {
+            const size = shapeSize.value;
+            ctx.value.drawImage(img, centerX - size/2, centerY - size/2, size, size);
+          };
+          img.src = shape.dataUrl;
+        };
+        
+        // Custom shape dialog methods
+        const openCustomShapeDialog = () => {
+          customShapeDialog.value = true;
+          newShapeName.value = '';
+          nextTick(() => {
+            if (customShapeCanvas.value) {
+              customShapeCtx.value = customShapeCanvas.value.getContext('2d');
+              clearCustomCanvas();
+            }
+          });
+        };
+        
+        const closeCustomShapeDialog = () => {
+          customShapeDialog.value = false;
+          newShapeName.value = '';
+        };
+        
+        const clearCustomCanvas = () => {
+          if (customShapeCtx.value) {
+            customShapeCtx.value.fillStyle = '#1e1e1e';
+            customShapeCtx.value.fillRect(0, 0, 200, 200);
+          }
+        };
+        
+        const startCustomDraw = (e) => {
+          isCustomDrawing.value = true;
+          const coords = getCustomCoords(e);
+          customShapeCtx.value.beginPath();
+          customShapeCtx.value.moveTo(coords.x, coords.y);
+        };
+        
+        const customDraw = (e) => {
+          if (!isCustomDrawing.value) return;
+          const coords = getCustomCoords(e);
+          customShapeCtx.value.lineTo(coords.x, coords.y);
+          customShapeCtx.value.strokeStyle = '#FFFFFF';
+          customShapeCtx.value.lineWidth = 3;
+          customShapeCtx.value.lineCap = 'round';
+          customShapeCtx.value.lineJoin = 'round';
+          customShapeCtx.value.stroke();
+        };
+        
+        const stopCustomDraw = () => {
+          isCustomDrawing.value = false;
+        };
+        
+        const saveCustomShape = () => {
+          if (!newShapeName.value.trim()) return;
+          
+          const dataUrl = customShapeCanvas.value.toDataURL('image/png');
+          const newShape = {
+            id: 'custom-' + Date.now(),
+            name: newShapeName.value.trim(),
+            dataUrl: dataUrl,
+            isCustom: true
+          };
+          
+          customShapes.value.push(newShape);
+          saveCustomShapesToStorage();
+          showSnackbar(`Vorm "${newShape.name}" toegevoegd!`);
+          closeCustomShapeDialog();
+        };
+        
+        const deleteCustomShape = (shapeId) => {
+          const index = customShapes.value.findIndex(s => s.id === shapeId);
+          if (index !== -1) {
+            const name = customShapes.value[index].name;
+            customShapes.value.splice(index, 1);
+            saveCustomShapesToStorage();
+            showSnackbar(`Vorm "${name}" verwijderd`);
+          }
         };
 
         onMounted(() => {
@@ -575,6 +789,7 @@
           ctx.value.fillStyle = '#1e1e1e';
           ctx.value.fillRect(0, 0, canvas.value.width, canvas.value.height);
           saveState();
+          loadCustomShapes();
           
           window.addEventListener('resize', resizeCanvas);
         });
@@ -594,9 +809,13 @@
           historyIndex,
           snackbar,
           snackbarText,
-          shapes,
+          builtInShapes,
+          customShapes,
           draggingShape,
           ghostStyle,
+          customShapeDialog,
+          customShapeCanvas,
+          newShapeName,
           startDrawing,
           draw,
           stopDrawing,
@@ -607,7 +826,15 @@
           onDragStart,
           onDragEnd,
           onDragOver,
-          onDrop
+          onDrop,
+          openCustomShapeDialog,
+          closeCustomShapeDialog,
+          clearCustomCanvas,
+          startCustomDraw,
+          customDraw,
+          stopCustomDraw,
+          saveCustomShape,
+          deleteCustomShape
         };
       }
     });
